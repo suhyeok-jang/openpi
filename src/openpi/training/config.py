@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
+import openpi.policies.gr1_policy as gr1_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -352,6 +353,50 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotGR1DataConfig(DataConfigFactory):
+    """Data config for GR-1 tabletop LeRobot datasets (GR1ArmsAndWaistFourierHands).
+
+    The raw dataset stores 44-dim state/action; this config pipes the data into
+    ``GR1Inputs``/``GR1Outputs`` which slice to the 29-dim arms + hands + waist
+    subset used by GR00T's ``fourier_gr1_arms_waist`` modality config. No delta
+    transform: the GR00T modality marks every group as absolute, non-EEF.
+    """
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "observation.images.ego_view",
+                        "observation/state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[gr1_policy.GR1Inputs(model_type=model_config.model_type)],
+            outputs=[gr1_policy.GR1Outputs()],
+        )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            # GR-1 LeRobot dataset stores the action chunk under the ``action`` key
+            # (not the default ``actions``). This tells LeRobot which key to
+            # time-chunk over action_horizon frames.
+            action_sequence_keys=("action",),
         )
 
 
@@ -760,6 +805,89 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    #
+    # Fine-tuning GR-1 (GR1ArmsAndWaistFourierHands, 29-dim arms+hands+waist).
+    # Dataset: nvidia/PhysicalAI-Robotics-GR00T-X-Embodiment-Sim (GR-1 tabletop subset,
+    # LeRobot v2.0 format). Set HF_LEROBOT_HOME=/fsx/ns1/datasets before launching so
+    # LeRobot resolves repo_id="GR1-Tabletop-Merged-1000x24" to the local dataset.
+    #
+    TrainConfig(
+        name="pi05_gr1",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            # Pi0 default action_dim=32; our 29-dim GR-1 action fits in the front
+            # and the trailing 3 dims get zero-padded by PadStatesAndActions.
+            action_horizon=16,
+            # Keep the default discrete_state_input=True for pi0.5 (quantile-normed
+            # state is discretized into 256 bins and tokenized as language input,
+            # matching pi0.5 pretraining).
+        ),
+        data=LeRobotGR1DataConfig(
+            repo_id="GR1-Tabletop-Merged-1000x24",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        # Match the GR00T launch_train.py reference: global batch 1024 on 8 GPUs,
+        # peak LR 1e-4, 5% warmup -> 3000 / 60000, cosine decay to 1e-5.
+        # Keep openpi's default AdamW weight_decay (1e-10) rather than GR00T's 1e-5
+        # to stay consistent with the pi0.5 pretraining regime.
+        batch_size=1024,
+        num_workers=24,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=3_000,
+            peak_lr=1e-4,
+            decay_steps=60_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=60_000,
+        # save_interval=1000 (default) × keep_period=1000 → every 1k-step ckpt permanently kept.
+        save_interval=1000,
+        keep_period=1000,
+    ),
+    #
+    # pi0-FAST counterpart of pi05_gr1.  Same data, same optimizer schedule, same
+    # batch size / step count -- only the model architecture (and base ckpt)
+    # differ. Lets us A/B compare flow-matching (pi0.5) vs autoregressive FAST
+    # tokens on identical training compute and identical inputs.
+    #
+    TrainConfig(
+        name="pi0_fast_gr1",
+        model=pi0_fast.Pi0FASTConfig(
+            # Same action layout as pi05_gr1: 32 padded slots (29 active + 3 zero
+            # padding from PadStatesAndActions) over a 16-step chunk.
+            action_dim=32,
+            action_horizon=16,
+            # FAST tokenizer compresses the (16, 29) chunk into a variable number
+            # of tokens. The base config's 250 is documented for two-arm setups
+            # of 7+ active dims; GR-1 has 29 active dims so we leave headroom.
+            # If training prints "input sequence got truncated" warnings, bump
+            # this to 500 (memory cost is roughly linear in max_token_len).
+            max_token_len=350,
+        ),
+        data=LeRobotGR1DataConfig(
+            repo_id="GR1-Tabletop-Merged-1000x24",
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=1024,
+        num_workers=24,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=3_000,
+            peak_lr=1e-4,
+            decay_steps=60_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        # Pi0-FAST base checkpoint (autoregressive variant from openpi-assets).
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
+        num_train_steps=60_000,
+        save_interval=1000,
+        keep_period=1000,
     ),
     #
     # Fine-tuning Aloha configs.

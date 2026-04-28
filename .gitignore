@@ -3,6 +3,15 @@ assets/
 checkpoints/
 data/
 wandb/
+slurm_out/
+
+# Eval outputs (mp4 / csv / per-episode logs are large; keep summary.py only).
+output_seed_fixed/openpi_gr1/
+output_seed_fixed/__pycache__/
+MUJOCO_LOG.TXT
+
+# Accidentally nested upstream clone at repo root.
+/openpi/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

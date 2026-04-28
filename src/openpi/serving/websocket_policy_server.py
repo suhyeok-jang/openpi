@@ -41,6 +41,13 @@ class WebsocketPolicyServer:
             self._port,
             compression=None,
             max_size=None,
+            # Disable websocket keepalive: the first ``policy.infer`` call
+            # triggers JAX JIT compilation that can block the asyncio event
+            # loop for >20 s, causing the default ping_timeout to fire and
+            # close the connection with 1011 before the client gets its
+            # first action chunk back.
+            ping_interval=None,
+            ping_timeout=None,
             process_request=_health_check,
         ) as server:
             await server.serve_forever()

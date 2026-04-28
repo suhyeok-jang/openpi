@@ -35,7 +35,16 @@ class WebsocketClientPolicy(_base_policy.BasePolicy):
             try:
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
                 conn = websockets.sync.client.connect(
-                    self._uri, compression=None, max_size=None, additional_headers=headers
+                    self._uri,
+                    compression=None,
+                    max_size=None,
+                    additional_headers=headers,
+                    # Disable keepalive: the first server-side infer call may
+                    # take >20 s due to JAX JIT compilation, during which the
+                    # server cannot pong. Without this the client kills the
+                    # connection (1011) before the model finishes compiling.
+                    ping_interval=None,
+                    ping_timeout=None,
                 )
                 metadata = msgpack_numpy.unpackb(conn.recv())
                 return conn, metadata

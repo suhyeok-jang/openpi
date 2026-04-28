@@ -18,6 +18,7 @@ class EnvMode(enum.Enum):
     ALOHA_SIM = "aloha_sim"
     DROID = "droid"
     LIBERO = "libero"
+    ROBOCASA_GR1 = "robocasa_gr1"
 
 
 @dataclasses.dataclass
@@ -73,6 +74,10 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
         config="pi05_libero",
         dir="gs://openpi-assets/checkpoints/pi05_libero",
     ),
+    # No public default checkpoint for GR-1 RoboCasa yet; users must pass
+    # ``policy:checkpoint --policy.config pi05_gr1 --policy.dir <path>``.
+    # The entry below is a placeholder so EnvMode.ROBOCASA_GR1 is recognized;
+    # ``create_default_policy`` will raise if invoked without an explicit ckpt.
 }
 
 

@@ -439,6 +439,10 @@ class TorchDataLoader:
             num_workers=num_workers,
             multiprocessing_context=mp_context,
             persistent_workers=num_workers > 0,
+            # Each worker prefetches this many batches; helps absorb /fsx I/O
+            # latency spikes that previously caused periodic 30s+ step stalls.
+            prefetch_factor=4 if num_workers > 0 else None,
+            pin_memory=True,
             collate_fn=_collate_fn,
             worker_init_fn=_worker_init_fn,
             drop_last=True,
