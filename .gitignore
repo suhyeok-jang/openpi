@@ -1,5 +1,8 @@
-# Data directories.
-assets/
+# Data directories. We whitelist the GR-1 norm-stats subtrees (~400 KB of
+# JSON) so anyone cloning the repo can train without re-running compute_norm_stats.
+assets/*
+!assets/pi05_gr1/
+!assets/pi0_fast_gr1/
 checkpoints/
 data/
 wandb/
